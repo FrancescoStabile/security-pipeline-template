@@ -1,0 +1,287 @@
+name: 🛡️ Security Scan Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * 1'  # Weekly scan on Monday at 2 AM
+
+env:
+  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # Job 1: Static Analysis Security Testing (SAST)
+  sast:
+    name: 🔍 Static Analysis
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tool: [codeql, eslint]
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        if: matrix.tool == 'eslint'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      # CodeQL Analysis (Free for public repos)
+      - name: Initialize CodeQL
+        if: matrix.tool == 'codeql'
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript, typescript
+      
+      - name: Install dependencies
+        if: matrix.tool == 'eslint'
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          else
+            echo "No package.json found, skipping npm install"
+          fi
+      
+      - name: CodeQL Analysis
+        if: matrix.tool == 'codeql'
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript"
+      
+      # ESLint Security Analysis
+      - name: ESLint Security Scan
+        if: matrix.tool == 'eslint'
+        run: |
+          if [ -f package.json ]; then
+            npx eslint . \
+              --ext .js,.jsx,.ts,.tsx \
+              --format json \
+              --output-file eslint-security-report.json \
+              || echo "ESLint completed with warnings/errors"
+          else
+            echo "No package.json found, creating empty report"
+            echo '{"results": []}' > eslint-security-report.json
+          fi
+        continue-on-error: true
+      
+      - name: Upload SAST Results
+        if: matrix.tool == 'eslint'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-eslint-results
+          path: eslint-security-report.json
+
+  # Job 2: Software Composition Analysis (SCA)
+  sca:
+    name: 📦 Dependency Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          else
+            echo "No package.json found, skipping dependency installation"
+            exit 0
+          fi
+      
+      # NPM Audit (Built-in, free)
+      - name: NPM Security Audit
+        run: |
+          if [ -f package.json ]; then
+            npm audit --audit-level=moderate --json > npm-audit-report.json || echo "NPM audit completed with findings"
+          else
+            echo '{"vulnerabilities": {}}' > npm-audit-report.json
+          fi
+        continue-on-error: true
+      
+      # OSV Scanner (Google's free vulnerability scanner)
+      - name: OSV Scanner
+        uses: google/osv-scanner-action@v1.7.4
+        with:
+          scan-args: |-
+            --output=osv-report.json
+            --format=json
+            ./
+        continue-on-error: true
+      
+      - name: Upload SCA Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-results
+          path: |
+            npm-audit-report.json
+            osv-report.json
+
+  # Job 3: Secrets Detection
+  secrets:
+    name: 🔐 Secrets Detection
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      # TruffleHog OSS (Free version)
+      - name: TruffleHog Secrets Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --json --output=trufflehog-report.json
+        continue-on-error: true
+      
+      - name: Upload Secrets Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: secrets-results
+          path: trufflehog-report.json
+
+  # Job 4: Container Security (if Dockerfile exists)
+  container:
+    name: 🐳 Container Security
+    runs-on: ubuntu-latest
+    if: hashFiles('**/Dockerfile*') != ''
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Build Docker Image
+        run: |
+          if [ -f Dockerfile ]; then
+            docker build -t security-test:latest .
+          else
+            echo "No Dockerfile found"
+            exit 0
+          fi
+      
+      # Trivy Container Scan (Free)
+      - name: Trivy Container Scan
+        if: hashFiles('**/Dockerfile*') != ''
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'security-test:latest'
+          format: 'json'
+          output: 'trivy-container-report.json'
+        continue-on-error: true
+      
+      # Hadolint Dockerfile Linting (Free)
+      - name: Hadolint Dockerfile Scan
+        if: hashFiles('**/Dockerfile*') != ''
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          format: json
+          output-file: hadolint-report.json
+        continue-on-error: true
+      
+      - name: Upload Container Results
+        if: hashFiles('**/Dockerfile*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-results
+          path: |
+            trivy-container-report.json
+            hadolint-report.json
+
+  # Job 5: Security Report Generation
+  report:
+    name: 📊 Generate Security Report
+    needs: [sast, sca, secrets, container]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: security-reports/
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install Report Dependencies
+        run: |
+          pip install --no-cache-dir requests
+      
+      - name: Generate Security Report
+        run: |
+          python security/scripts/generate-report.py \
+            --input-dir security-reports/ \
+            --output-dir final-report/
+      
+      - name: Upload Final Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-final-report
+          path: final-report/
+      
+      # Upload SARIF to GitHub Security Tab
+      - name: Upload SARIF to GitHub
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('final-report/consolidated.sarif') != ''
+        with:
+          sarif_file: final-report/consolidated.sarif
+      
+      # Comment on PR with results summary
+      - name: Comment PR with Security Summary
+        if: github.event_name == 'pull_request' && hashFiles('final-report/summary.json') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            try {
+              const summary = JSON.parse(fs.readFileSync('final-report/summary.json', 'utf8'));
+              
+              const comment = `## 🛡️ Security Scan Results
+              
+              | Category | Critical | High | Medium | Low |
+              |----------|----------|------|--------|-----|
+              | SAST | ${summary.sast?.critical || 0} | ${summary.sast?.high || 0} | ${summary.sast?.medium || 0} | ${summary.sast?.low || 0} |
+              | SCA | ${summary.sca?.critical || 0} | ${summary.sca?.high || 0} | ${summary.sca?.medium || 0} | ${summary.sca?.low || 0} |
+              | Secrets | ${summary.secrets?.found || 0} | - | - | - |
+              | Container | ${summary.container?.critical || 0} | ${summary.container?.high || 0} | ${summary.container?.medium || 0} | ${summary.container?.low || 0} |
+              
+              **Total Issues**: ${summary.total_issues || 0}
+              **Security Score**: ${summary.security_score || 0}/100
+              
+              📊 Detailed reports are available in the workflow artifacts.
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.log('Could not post PR comment:', error.message);
+            }

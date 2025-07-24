@@ -1,0 +1,23 @@
+{
+  "name": "security-pipeline-example",
+  "version": "1.0.0",
+  "description": "Example Node.js project for security pipeline testing",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint .",
+    "lint:security": "eslint . --config .eslintrc.security.js"
+  },
+  "keywords": ["security", "devsecops", "example"],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "helmet": "^7.1.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-plugin-security": "^2.1.0"
+  }
+}

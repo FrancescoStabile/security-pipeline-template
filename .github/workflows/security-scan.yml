@@ -115,7 +115,7 @@ jobs:
       
       # OSV Scanner (Google's free vulnerability scanner)
       - name: OSV Scanner
-        uses: google/osv-scanner-action@v1.7.4
+        uses: google/osv-scanner-action@v2.2.1
         with:
           scan-args: |-
             --output=osv-report.json

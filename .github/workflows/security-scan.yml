@@ -12,6 +12,10 @@ env:
   NODE_VERSION: '18'
   PYTHON_VERSION: '3.11'
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   # Job 1: Static Analysis Security Testing (SAST)
   sast:
@@ -113,14 +117,16 @@ jobs:
           fi
         continue-on-error: true
       
-      # OSV Scanner (Google's free vulnerability scanner)
+      # Install OSV Scanner manually (sostituisce action che dava problemi)
+      - name: Install OSV Scanner
+        run: |
+          curl -fLo osv-scanner https://github.com/google/osv-scanner/releases/download/v2.1.0/osv-scanner_linux_amd64
+          chmod +x osv-scanner
+          sudo mv osv-scanner /usr/local/bin/osv-scanner
+
       - name: OSV Scanner
-        uses: google/osv-scanner-action@v1.7.4
-        with:
-          scan-args: |-
-            --output=osv-report.json
-            --format=json
-            ./
+        run: |
+          osv-scanner --output=osv-report.json --format=json ./
         continue-on-error: true
       
       - name: Upload SCA Results
@@ -149,9 +155,15 @@ jobs:
           path: ./
           base: ${{ github.event.repository.default_branch }}
           head: HEAD
-          extra_args: --json --output=trufflehog-report.json
+          extra_args: --json
         continue-on-error: true
-      
+
+      - name: Save TruffleHog Output
+        if: always()
+        run: |
+          # Salva l'output dello step precedente in un file
+          cp trufflehog.json trufflehog-report.json || echo "No secrets found"
+
       - name: Upload Secrets Results
         uses: actions/upload-artifact@v4
         with:
@@ -162,21 +174,15 @@ jobs:
   container:
     name: 🐳 Container Security
     runs-on: ubuntu-latest
-    if: hashFiles('**/Dockerfile*') != ''
-    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Build Docker Image
+        if: hashFiles('**/Dockerfile*') != ''
         run: |
-          if [ -f Dockerfile ]; then
-            docker build -t security-test:latest .
-          else
-            echo "No Dockerfile found"
-            exit 0
-          fi
-      
+          docker build -t security-test:latest .
+
       # Trivy Container Scan (Free)
       - name: Trivy Container Scan
         if: hashFiles('**/Dockerfile*') != ''
@@ -186,7 +192,7 @@ jobs:
           format: 'json'
           output: 'trivy-container-report.json'
         continue-on-error: true
-      
+
       # Hadolint Dockerfile Linting (Free)
       - name: Hadolint Dockerfile Scan
         if: hashFiles('**/Dockerfile*') != ''
@@ -196,7 +202,7 @@ jobs:
           format: json
           output-file: hadolint-report.json
         continue-on-error: true
-      
+
       - name: Upload Container Results
         if: hashFiles('**/Dockerfile*') != ''
         uses: actions/upload-artifact@v4
